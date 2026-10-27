@@ -30,12 +30,14 @@ jobs:
           sudo apt update
           sudo apt install -y crossbuild-essential-arm64 cmake ninja-build wget tar
 
-      - name: Fetch official x86_64 AOSP clang-r487747c
+      - name: Fetch official x86_64 AOSP clang‑r487747c
         run: |
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/tags/clang-r487747c/clang-r487747c.tar.xz
-          tar -xf clang-r487747c.tar.xz
+          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz" -O clang-r487747c.tar.gz
+          mkdir -p clang-r487747c
+          tar -zxf clang-r487747c.tar.gz -C clang-r487747c
           echo "AOSP_CLANG_ROOT=$(pwd)/clang-r487747c" >> $GITHUB_ENV
           echo "PATH=$(pwd)/clang-r487747c/bin:$PATH" >> $GITHUB_ENV
+
 
       - name: Clone llvm-project & llvm_android (full clone, no depth=1)
         run: |
