@@ -1,0 +1,133 @@
+name: One-shot AOSP clang-r487747c Full-LTO aarch64
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout empty repo
+        uses: actions/checkout@v4
+
+      - name: Max free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          df -h
+
+      - name: Increase swap to 6G
+        run: |
+          sudo fallocate -l 6G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y crossbuild-essential-arm64 cmake ninja-build wget tar
+
+      - name: Fetch official x86_64 AOSP clang-r487747c
+        run: |
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/tags/clang-r487747c/clang-r487747c.tar.xz
+          tar -xf clang-r487747c.tar.xz
+          echo "AOSP_CLANG_ROOT=$(pwd)/clang-r487747c" >> $GITHUB_ENV
+          echo "PATH=$(pwd)/clang-r487747c/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Clone llvm-project & llvm_android (full clone, no depth=1)
+        run: |
+          git clone https://android.googlesource.com/toolchain/llvm-project
+          git clone https://android.googlesource.com/toolchain/llvm_android
+
+      - name: Checkout manifest locked commits
+        run: |
+          cd llvm-project
+          git checkout d9f89f4d16663d5012e5c09495f3b30ece3d2362
+          cd ../llvm_android
+          git checkout 8443a75fcd5c80245b194f6510b98a11098fe7fe
+          cd ..
+
+      - name: Apply AOSP patches (fail fast)
+        run: |
+          set -e
+          cd llvm-project
+          for p in ../llvm_android/patches/*.patch; do
+            echo "Apply $p"
+            git apply "$p"
+          done
+          for p in ../llvm_android/patches/cherry/*.patch; do
+            echo "Apply cherry $p"
+            git apply "$p"
+          done
+          git status
+          cd ..
+
+      - name: Build x86 host tblgen
+        run: |
+          mkdir -p build-host-tblgen && cd build-host-tblgen
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DLLVM_INCLUDE_TESTS=ON \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_BUILD_DOCS=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DCMAKE_C_COMPILER=${{ env.AOSP_CLANG_ROOT }}/bin/clang \
+            -DCMAKE_CXX_COMPILER=${{ env.AOSP_CLANG_ROOT }}/bin/clang++ \
+            -S ../llvm-project/llvm
+          ninja llvm-tblgen clang-tblgen
+          echo "LLVM_TBLGEN=$(pwd)/bin/llvm-tblgen" >> $GITHUB_ENV
+          echo "CLANG_TBLGEN=$(pwd)/bin/clang-tblgen" >> $GITHUB_ENV
+
+      - name: Canadian Cross compile aarch64 Full-LTO clang
+        run: |
+          mkdir -p build-cross-aarch64 && cd build-cross-aarch64
+          SYSROOT=/usr/aarch64-linux-gnu
+          cmake -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DLLVM_HOST_TRIPLE=aarch64-unknown-linux-gnu \
+            -DCMAKE_C_COMPILER=${{ env.AOSP_CLANG_ROOT }}/bin/clang \
+            -DCMAKE_CXX_COMPILER=${{ env.AOSP_CLANG_ROOT }}/bin/clang++ \
+            -DCMAKE_C_COMPILER_TARGET=aarch64-linux-gnu \
+            -DCMAKE_CXX_COMPILER_TARGET=aarch64-linux-gnu \
+            -DCMAKE_SYSROOT=${SYSROOT} \
+            -DLLVM_TABLEGEN=${{ env.LLVM_TBLGEN }} \
+            -DCLANG_TABLEGEN=${{ env.CLANG_TBLGEN }} \
+            -DLLVM_ENABLE_PROJECTS="clang;lld;compiler-rt" \
+            -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_INCLUDE_TESTS=ON \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_BUILD_DOCS=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DLLVM_ENABLE_LTO=Full \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/install \
+            -S ../llvm-project/llvm
+          # Full LTO link is memory heavy, single thread
+          ninja -j1 install
+
+      - name: Package artifacts
+        run: |
+          cd llvm-project
+          tar -cJf ../llvm-project-patched.tar.xz .
+          cd ..
+          cd build-cross-aarch64/install
+          tar -cJf ../../bootstrap-clang-r487747c-fulllto.tar.xz .
+          cd ../..
+
+      - name: Upload patched source (for phone PGO)
+        uses: actions/upload-artifact@v7
+        with:
+          name: llvm-project-patched
+          path: llvm-project-patched.tar.xz
+          retention-days: 14
+
+      - name: Upload one-shot aarch64 Full-LTO bootstrap clang
+        uses: actions/upload-artifact@v7
+        with:
+          name: bootstrap-clang-r487747c-fulllto
+          path: bootstrap-clang-r487747c-fulllto.tar.xz
+          retention-days: 14
